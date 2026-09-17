@@ -1,0 +1,63 @@
+diff --git a/src/cpu.c b/src/cpu.c
+index 5cf98d6..207ee72 100644
+--- a/src/cpu.c
++++ b/src/cpu.c
+@@ -47,7 +47,8 @@ uint8_t xirq_pend;
+ uint8_t tirq_pend;
+ uint8_t t_flag;
+ 
+-uint16_t lastpc;
++unsigned artgame_test_mb1_instructions = 0;
++uint16_t lastpc;
+ uint16_t A11;
+ uint16_t A11ff;
+ uint8_t bs;
+@@ -133,7 +134,8 @@ void cpu_exec(void)
+ 
+       clk=0;	
+ 
+-      lastpc=pc;
++      lastpc=pc;
++      if (pc >= 0x800) artgame_test_mb1_instructions++;
+       op=ROM(pc++);
+ 
+       switch (op)
+diff --git a/src/vmachine.c b/src/vmachine.c
+index 1bef88e..fbb132f 100644
+--- a/src/vmachine.c
++++ b/src/vmachine.c
+@@ -654,12 +654,31 @@ uint8_t in_bus(void)
+ }
+ 
+ 
+-void ext_write(uint8_t dat, uint16_t adr)
++unsigned artgame_test_unsafe_writes = 0;
++unsigned artgame_test_active_writes = 0;
++unsigned artgame_test_last_on_clock = 0;
++unsigned artgame_test_monitor = 0;
++unsigned artgame_test_unblanked_color = 0;
++unsigned artgame_test_grass_writes = 0;
++
++void ext_write(uint8_t dat, uint16_t adr)
+ {
+    int i;
+ 
+-   if (!(p1 & 0x08))
+-   {
++   if (!(p1 & 0x08))
++   {
++      if (artgame_test_monitor && adr == 0xa3 && dat == 0x10)
++      {
++         artgame_test_grass_writes++;
++         if (!read_t1()) artgame_test_unblanked_color++;
++      }
++      if (artgame_test_monitor && adr < 0xa0)
++      {
++         if (VDCwrite[0xa0] & 0x20) artgame_test_unsafe_writes++;
++         if (master_clk <= VBLCLK) artgame_test_active_writes++;
++      }
++      if (adr == 0xa0 && (dat & 0x20) && !(VDCwrite[0xa0] & 0x20))
++         artgame_test_last_on_clock = master_clk;
+       /* Handle VDC Write */		
+       /* registers A0-AF are mirrored at B0-BF (MAME i8244) */
+       if ((adr & 0xE0) == 0xA0)

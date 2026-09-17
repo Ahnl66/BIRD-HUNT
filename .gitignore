@@ -1,0 +1,7 @@
+*.p
+*.lst
+*.png
+__pycache__/
+.DS_Store
+._*
+.vscode/
