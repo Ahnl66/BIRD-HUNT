@@ -4,7 +4,7 @@
 ;
 ; Build: make (ASL assembler and p2bin required)
 ;
-; All executable code AND MOVP tables stay in MB0 (0400h-07ffh).
+; MB0 holds core routines; HUD/extended loop use MB1 with explicit bank returns.
 ; ASL can insert SEL MB1 before CALL, but RET does not restore that latch.
 ; BIOS IRQs use RB0; game code uses RB1 and RAM 20h-3bh.
 	cpu 8048
@@ -32,6 +32,7 @@ score_lo equ 034h                ; unsigned 16-bit total, saturated at 65535
 score_hi equ 035h
 score_pending equ 036h           ; five digits, refreshed one per VBlank
 score_digits equ 037h            ; most significant digit first, through 3bh
+plus_active equ 03ch             ; retained after the background loader returns
 horizon_y equ 150                ; 60% of the 250-line displayed field
 x_min equ 008h
 x_max equ 098h
@@ -43,15 +44,18 @@ y_max equ 0b8h
 	jmp irq                         ; 0402: external IRQ -> BIOS
 	jmp timer_irq                   ; 0404: timer IRQ
 	jmp frame_irq                   ; 0406: sky reset, then full BIOS VSYNC
-	jmp start                       ; 0408: BIOS selectgame entry
+	jmp reset                       ; 0408: menu launch needs full initialization too
 	jmp soundirq                    ; 040a: BIOS sound continuation
 reset
 	dis tcnti
 	stop tcnt
 	sel mb0
+	sel rb1                         ; BIOS init/gfxoff require the main register bank
 	call init                       ; clears all sprites, chars, quads, grid and RAM
 	sel rb1
+	jmp detect_plus
 start
+	en i
 	dis tcnti
 	stop tcnt
 	mov r0,#game_active
@@ -65,7 +69,7 @@ start
 	mov @r0,#080h                   ; do not run the BIOS on-screen clock
 	mov r0,#vdc_char0
 	mov r3,#02ch
-	mov r4,#060h
+	mov r4,#070h                   ; one text row lower
 	mov r2,#9
 	mov r1,#title_text & 0ffh
 intro_char
@@ -104,7 +108,9 @@ hide_text
 	inc r0
 	djnz r2,hide_text
 	call init_game
+	call begin_round_wait
 	call init_score_label
+	call reveal_plus
 	mov r0,#vdc_color
 	mov a,#col_bck_blue
 	movx @r0,a
@@ -115,6 +121,7 @@ hide_text
 	mov r0,#game_active
 	mov @r0,#1
 	call draw_scene
+	call draw_hud
 	call gfxon
 	jmp game_loop
 title_text
@@ -131,6 +138,9 @@ frame_irq
 	mov a,#col_bck_blue
 	movx @r0,a
 	; Arm before the horizon; use the beam counter for the final alignment.
+	mov r0,#plus_active
+	mov a,@r0
+	jnz frame_irq_done
 	mov a,#(256-128)
 	mov t,a
 	strt cnt
@@ -180,33 +190,50 @@ decimal_next
 score_divisors
 	db 0f0h,0d8h,018h,0fch,09ch,0ffh,0f6h,0ffh,0ffh,0ffh
 
+; Known G7400 BIOS opcode signatures; unknown/non-Plus BIOS stays G7000-safe.
+; MOVP3 reads BIOS page 3 without entering Plus-only routines.
+detect_plus
+	mov a,#07eh
+	movp3 a,@a
+	xrl a,#039h
+	jnz plain_console
+	mov a,#094h
+	movp3 a,@a
+	xrl a,#0bbh
+	jnz plain_console
+	mov r0,#plus_active
+	mov @r0,#1
+	jmp bank02                     ; bank 3 -> bank 2 loader at 0408h
+plain_console
+	jmp start
+	if $ > 0500h
+	fatal "Page 4 overflow"
+	endif
+
 	org 0500h
 game_loop
+	sel mb1
+	jmp extended_loop
+
+perfect_bonus
+	mov r0,#ammo
+	mov a,@r0
+	mov r2,a
+	rl a
+	rl a
+	add a,r2
+	add a,#10
+	mov r2,a
+	ret
+
+begin_round_wait
+	mov r0,#bird_ram+2
+	mov @r0,#4                     ; wait for any round melody to finish
+	mov r0,#fire_latch
+	mov @r0,#1                     ; title/fire cannot spill into a shot
 	mov r0,#flash_time
-	mov a,@r0
-	jz no_flash_tick
-	dec a
-	mov @r0,a
-no_flash_tick
-	call extramenable
-	mov r1,#0
-	call getjoystick
-	call move_cursor
-	call shoot
-	call move_birds
-	call waitvsync
-	call vdcenable
-	call gfxoff
-	call draw_scene
-	call draw_score
-	call gfxon
-	mov r0,#sound_event
-	mov a,@r0
-	jz frame_done
 	mov @r0,#0
-	call playsound
-frame_done
-	jmp game_loop
+	ret
 
 move_cursor
 	mov r0,#cursor_x
@@ -356,6 +383,9 @@ draw_score
 	call printchar
 score_draw_done
 	ret
+	if $ > 0600h
+	fatal "Page 5 overflow"
+	endif
 
 	org 0600h
 move_birds
@@ -367,7 +397,7 @@ move_birds
 	dec a
 	mov @r0,a
 	jnz bird_return
-	call new_round
+	call begin_round_wait
 	ret
 bird_step
 	mov r0,#bird_ram+2
@@ -453,8 +483,8 @@ draw_scene
 	mov r0,#vdc_spr1_ctrl
 	mov r1,#bird_ram+2
 	mov a,@r1
-	xrl a,#2
-	jz hide_bird
+	anl a,#0feh                   ; hide absent, game-over and waiting states
+	jnz hide_bird
 	dec r1
 	mov a,@r1
 	movx @r0,a
@@ -537,6 +567,19 @@ score_label_char
 	ret
 score_label
 	db _S,_C,_O,_R,_E
+
+reveal_plus
+	mov r0,#plus_active
+	mov a,@r0
+	jz no_plus_reveal
+	mov r7,#0ebh                   ; mixer wiring: blue=bit4, green=bit2
+	mov a,#0ffh                    ; dark Plus colors, no external collisions
+	call plusmode
+no_plus_reveal
+	ret
+	if $ > 0700h
+	fatal "Page 6 overflow"
+	endif
 
 
 	org 0700h
@@ -662,7 +705,7 @@ settle_score
 	mov r2,#5
 	dec a
 	jz add_score
-	mov r2,#10
+	call perfect_bonus
 add_score
 	mov r0,#score_lo
 	mov a,@r0
@@ -689,7 +732,336 @@ halve_score
 	rrc a                          ; carry transfers the high byte's lowest bit
 	mov @r0,a
 	jmp score_decimal
+; The HUD helper makes no BIOS calls and restores the MB0 latch explicitly.
+draw_hud
+	db 0f5h                        ; SEL MB1, hidden from ASL bank inference
+	call 000h                      ; 0800h while MB1 is selected
+	sel mb0
+	jnz hud_return                 ; do not refresh score on an ammo-update frame
+	jmp draw_score
+hud_return
+	ret
 rom_end
 	if rom_end > 0800h
 	fatal "ArtGame exceeded MB0; review every CALL/JMP before using MB1"
+	endif
+	if $ > 07f8h
+	fatal "Game overlaps loader return bridge"
+	endif
+	org 07f8h
+	orl p1,#3                      ; shared address with loader bank-switch bridge
+	jmp start                      ; loader return only; never the public 0408 entry
+
+	org 0800h
+; Char A is the fifth cartridge; quad 0 contains the first four. Char B stays
+; hidden, with its unused pointer byte caching the last ammo count. VDC reads
+; and writes here occur only with graphics disabled in VBlank.
+ammo_hud
+	mov r1,#ammo
+	mov a,@r1
+	mov r6,a
+	mov r0,#vdc_charb+2
+	movx a,@r0
+	mov r5,a
+	xrl a,r6
+	jnz ammo_changed
+	clr a
+	ret
+ammo_changed
+	mov a,r6
+	movx @r0,a
+	mov a,r5
+	xrl a,#0f8h
+	jnz ammo_pointers
+	; tune_shoot only changes AA (control), unlike tune_select2 which loads
+	; A7-A9. Seed a nonzero waveform before the first shot, output still muted.
+	mov r0,#vdc_sound0
+	clr a
+	movx @r0,a
+	inc r0
+	mov a,#00fh
+	movx @r0,a
+	inc r0
+	mov a,#0ffh
+	movx @r0,a
+	mov r0,#vdc_quad0
+	mov r3,#ammo_positions & 0ffh
+	mov r2,#16
+ammo_init_quad
+	mov a,r3
+	movp a,@a
+	movx @r0,a
+	inc r0
+	inc r3
+	djnz r2,ammo_init_quad
+	mov r0,#vdc_chara
+	mov r2,#4
+ammo_init_fifth
+	mov a,r3
+	movp a,@a
+	movx @r0,a
+	inc r0
+	inc r3
+	djnz r2,ammo_init_fifth
+ammo_pointers
+	mov a,r6
+	rl a
+	rl a
+	add a,r6                       ; five pointer bytes per ammo count
+	add a,#ammo_shapes & 0ffh
+	mov r3,a
+	mov r0,#vdc_quad0+2
+	mov r2,#4
+ammo_quad_pointer
+	mov a,r3
+	movp a,@a
+	movx @r0,a
+	inc r3
+	mov a,r0
+	add a,#4
+	mov r0,a
+	djnz r2,ammo_quad_pointer
+	mov r0,#vdc_chara+2
+	mov a,r3
+	movp a,@a
+	movx @r0,a
+	mov a,#1
+	ret
+ammo_positions
+	db 16,88,88,6,16,88,88,6,16,88,88,6,16,88,88,6
+	db 16,152,88,6
+; ROM glyph I resembles a narrow cartridge. Space and I both have 7 rows,
+; preserving the quad's shared height when its rightmost cartridge vanishes.
+ammo_shapes
+	db 88,88,88,88,88
+	db 168,88,88,88,88
+	db 168,168,88,88,88
+	db 168,168,168,88,88
+	db 168,168,168,168,88
+	db 168,168,168,168,168
+	if $ > 0900h
+	fatal "Ammo HUD crossed MOVP page"
+	endif
+
+; Calls from MB1 must restore the bank latch after returning from MB0/BIOS.
+call_base macro target
+	sel mb0
+	call target
+	sel mb1
+	endm
+
+	org 0900h
+extended_loop
+	call_base extramenable
+	call poll_pause
+	mov r1,#0
+	call_base getjoystick
+	mov r0,#game_active
+	mov a,@r0
+	jb7 paused_frame
+	mov r0,#bird_ram+2
+	mov a,@r0
+	jb2 waiting_frame
+	xrl a,#3
+	jz game_over_tick
+	mov r0,#flash_time
+	mov a,@r0
+	jz extended_input
+	dec a
+	mov @r0,a
+extended_input
+	call_base move_cursor
+	call_base shoot
+	call_base move_birds
+	call round_events
+	jmp extended_render
+waiting_frame
+	call_base move_cursor
+	call wait_round
+	jmp extended_render
+paused_frame
+	jf0 resume_game
+	jmp extended_render
+resume_game
+	mov a,@r0
+	anl a,#07fh
+	mov @r0,a
+	mov r0,#fire_latch
+	mov @r0,#1                    ; resume consumes the press, not ammunition
+	jmp extended_render
+game_over_tick
+	mov r0,#round_time
+	mov a,@r0
+	dec a
+	mov @r0,a
+	jnz extended_render
+	sel mb0
+	jmp reset
+extended_render
+	call_base waitvsync
+	call_base vdcenable
+	call_base gfxoff
+	call_base draw_scene
+	call_base draw_hud
+	call_base gfxon
+	mov r0,#sound_event
+	mov a,@r0
+	jz extended_next
+	mov @r0,#0
+	call_base playsound
+extended_next
+	jmp extended_loop
+
+; Scan all six console keyboard rows. Bit 4 low means a key is pressed.
+; game_active bits 7/6 hold pause/key-edge state without consuming more RAM.
+poll_pause
+	anl p1,#0fbh                   ; enable the keyboard encoder (active-low P1.2)
+	mov r0,#0f0h
+	mov r2,#6
+keyboard_row
+	mov a,r0
+	outl p2,a
+	in a,p2
+	jb4 keyboard_next
+	mov r0,#game_active
+	mov a,@r0
+	jb6 keyboard_done
+	orl a,#0c0h
+	mov @r0,a
+	jmp keyboard_done
+keyboard_next
+	inc r0
+	djnz r2,keyboard_row
+	mov r0,#game_active
+	mov a,@r0
+	anl a,#0bfh
+	mov @r0,a
+keyboard_done
+	orl p1,#4
+	ret
+	if $ > 0a00h
+	fatal "Extended loop crossed page"
+	endif
+
+	org 0a00h
+round_events
+	mov r0,#bird_ram+2
+	mov a,@r0
+	xrl a,#2
+	jnz event_done
+	mov r0,#round_time
+	mov a,@r0
+	xrl a,#30
+	jz round_boundary
+	mov a,@r0
+	xrl a,#60
+	jnz event_done
+	jmp happy_event
+round_boundary
+	mov r0,#round_hits
+	mov a,@r0
+	jz no_hits_end
+	xrl a,#3
+	jnz event_done
+	mov r0,#ammo
+	mov a,@r0
+	xrl a,#2
+	jnz happy_event
+	; Initial round completion has a pending default tune. Later repetitions
+	; have none, so the final 30-frame segment cannot restart the 90-frame gap.
+	mov r0,#sound_event
+	mov a,@r0
+	jz happy_event
+	mov r0,#round_time
+	mov @r0,#90
+happy_event
+	mov r0,#sound_event
+	mov @r0,#tune_select
+event_done
+	ret
+no_hits_end
+	mov r0,#score_lo
+	mov a,@r0
+	inc r0
+	orl a,@r0
+	jnz event_done
+	mov r0,#bird_ram+2
+	mov @r0,#3
+	call two_second_timer
+	mov r0,#sound_event
+	mov @r0,#tune_alarm
+	ret
+two_second_timer
+	; Measure VBlank before starting the alarm: PAL ~D6, NTSC ~34.
+	; The next VSYNC re-arms the horizon hook. Its interrupt occurs after
+	; VBlank, so measurement does not need to blank the G7000 grass for a frame.
+	call_base waitvsync
+	clr a
+measure_blank
+	inc a
+	jz blank_measured
+	nop
+	nop
+	nop
+	jt1 measure_blank
+blank_measured
+	mov r2,#120
+	jb7 pal_gameover
+	jmp set_gameover_time
+pal_gameover
+	mov r2,#100
+set_gameover_time
+	mov r0,#round_time
+	mov a,r2
+	mov @r0,a
+	mov r0,#game_active
+	mov @r0,#1
+	ret
+	if $ > 0b00h
+	fatal "Round events crossed page"
+	endif
+
+	org 0b00h
+; Waiting states are kept separate from the melody/repetition timer. Countdown
+; begins only once BIOS sound playback has stopped, including triple cheers.
+wait_round
+	mov r0,#fire_latch
+	mov @r0,#1
+	mov r0,#bird_ram+2
+	mov a,@r0
+	xrl a,#4
+	jnz round_countdown
+	mov r0,#iram_irqctrl
+	mov a,@r0
+	jb6 wait_round_done
+	call two_second_timer
+	mov r0,#bird_ram+2
+	mov @r0,#5
+	ret
+round_countdown
+	mov r0,#round_time
+	mov a,@r0
+	dec a
+	mov @r0,a
+	jnz wait_round_done
+	mov r0,#bird_ram+2
+	mov a,@r0
+	xrl a,#6
+	jz start_waited_round
+	call two_second_timer
+	mov r0,#round_time
+	mov a,@r0
+	rr a                         ; 100/120 frames becomes one second
+	mov @r0,a
+	mov r0,#bird_ram+2
+	mov @r0,#6
+	mov r0,#sound_event
+	mov @r0,#tune_buzz
+	ret
+start_waited_round
+	call_base new_round
+wait_round_done
+	ret
+	if $ > 0c00h
+	fatal "Cartridge exceeds standard 2K bank"
 	endif

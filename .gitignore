@@ -1,7 +1,9 @@
 *.p
 *.lst
 *.png
+!assets/g7400/*.png
 __pycache__/
 .DS_Store
 ._*
 .vscode/
+build/

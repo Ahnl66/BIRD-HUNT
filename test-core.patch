@@ -1,24 +1,31 @@
 diff --git a/src/cpu.c b/src/cpu.c
-index 5cf98d6..207ee72 100644
+index 5cf98d6..f41c496 100644
 --- a/src/cpu.c
 +++ b/src/cpu.c
-@@ -47,7 +47,8 @@ uint8_t xirq_pend;
+@@ -47,7 +47,11 @@ uint8_t xirq_pend;
  uint8_t tirq_pend;
  uint8_t t_flag;
  
 -uint16_t lastpc;
 +unsigned artgame_test_mb1_instructions = 0;
++extern unsigned artgame_test_monitor;
++unsigned artgame_test_bad_mb1 = 0;
++unsigned birdhunt_happy = 0, birdhunt_alarm = 0, birdhunt_buzz = 0;
 +uint16_t lastpc;
  uint16_t A11;
  uint16_t A11ff;
  uint8_t bs;
-@@ -133,7 +134,8 @@ void cpu_exec(void)
+@@ -133,7 +137,12 @@ void cpu_exec(void)
  
        clk=0;	
  
 -      lastpc=pc;
 +      lastpc=pc;
++      if (pc == 0x1a2 && acc == 0x4a) birdhunt_happy++;
++      if (pc == 0x1a2 && acc == 0x3c) birdhunt_alarm++;
++      if (pc == 0x1a2 && acc == 0x5a) birdhunt_buzz++;
 +      if (pc >= 0x800) artgame_test_mb1_instructions++;
++      if (artgame_test_monitor && pc >= 0x800 && !((pc < 0x855) || (pc >= 0x900 && pc < 0x9a5) || (pc >= 0xa00 && pc < 0xa6a) || (pc >= 0xb00 && pc < 0xb3b))) artgame_test_bad_mb1++;
        op=ROM(pc++);
  
        switch (op)

@@ -4,9 +4,8 @@ P2BIN ?= p2bin
 .PHONY: all rebuild
 all: bird-hunt.bin
 
-bird-hunt.bin: bird-hunt.asm include/g7000.h
-	"$(ASL)" -cpu 8048 -L bird-hunt.asm
-	"$(P2BIN)" bird-hunt.p bird-hunt.bin -r 1024-3071
+bird-hunt.bin: bird-hunt.asm plus-loader.inc include/g7000.h tools/build_rom.py assets/g7400/patterns.bin assets/g7400/screen.bin
+	ASL="$(ASL)" P2BIN="$(P2BIN)" python3 tools/build_rom.py
 
 rebuild:
 	$(MAKE) -B all

@@ -1,0 +1,72 @@
+# G7400 landscape data
+
+Converted from the approved AI-generated concept. These assets are now
+included in the root `bird-hunt.bin` by `tools/build_rom.py` and `plus-loader.inc`.
+
+## Format
+
+- `concept.png`: original approved design.
+- `patterns.bin`: 96 block-graphics DRCS characters, codes A0-FF, 10 bytes
+  per character. Each byte describes one row; bit 0 is the LEFT pixel.
+- `screen.bin`: 40 x 24 cells, row-major, two bytes per cell: attribute
+  followed by character code. Attributes are `0x88 | (background << 4) | foreground`.
+  Bit 7 selects the block DRCS set; bit 3 prevents blinking. Colors use R=1/G=2/B=4.
+- `background.inc`: the same 2880 bytes as ASL `db` statements, without placement.
+- `preview-native.png`: 320 x 240 decoded directly from the exported binary data.
+- `preview.png`: 4x nearest-neighbor enlargement, not an emulator screenshot.
+- `conversion.json`: sizes, palette and measured conversion losses.
+
+The 24 normal PAL rows use Y=0..23 with Y0=0. The separate service row
+(Y=31) is not included in the asset; the loader fills it with blue and enables it.
+This preview is not a full composite raster. The O2EM G7400 composition has
+been inspected; television overscan and alignment still need a physical test.
+The RGB values in the preview are idealized, not a calibrated TV palette.
+
+The converter quantizes to black, green, yellow and blue, picks two colors
+per tile, then reduces patterns to 96 using weighted Hamming-distance matching.
+It supports complemented patterns by exchanging the two colors. Some detail
+is necessarily lost; the output is intentionally not a pixel-exact copy.
+
+## Reproduce
+
+Requires Python 3, Pillow and numpy:
+
+```sh
+python3 tools/convert_background.py
+python3 tools/test_background.py
+```
+
+## Loader integration
+
+Detect G7400 before invoking Plus BIOS routines. During initialization,
+disable the Plus display using `waitvsync` then `plusloadr`. Select Plus I/O
+with `plusenable`. To define each pattern, use `plus_cmd_loadm` with
+`plus_loadm_wrni`, write its code with an attribute whose bit 7 is set,
+then select `plus_loadm_wrsl` and send the ten slices through `plusdata`.
+Return to `plus_loadm_wr` and write each row of attribute/code pairs,
+positioning each row explicitly with `plus_cmd_brow`. The pattern-loading
+scratch cell must be overwritten by the finished screen.
+
+Set Y0=0, disable zoom, cursor, conceal and box modes, and enable the normal
+display and blue service row through `plusloadr` during VBlank. Use
+`plusmode` to expose this layer through the VDC background colors, then
+restore VDC I/O before touching ordinary sprites. Its luminance/collision
+mask needs deliberate selection. Do not treat this as a free foreground layer.
+
+The 8 KB cartridge stores patterns in bank 2 and the two screen halves in
+banks 1 and 0. Each upper page contains 240 data bytes plus a MOVP/RET reader.
+BIOS calls execute in MB0; no bank switching occurs during gameplay.
+The loader keeps its stream pointer in scratch RAM 20h because `plusready`
+clobbers R0. Game initialization subsequently replaces that scratch value.
+The mixer uses mask EBh: hardware color wiring assigns blue to bit 4 and
+green to bit 2, not a direct VDC color-index bitmask. FFh luminance avoids
+unwanted external collisions. On G7400 the raster horizon interrupt is skipped.
+G7000 retains the original background. Physical G7400 testing remains pending.
+
+## References
+
+- Soeren Gust, G7000 programming manual, chapter 14:
+  https://www.videopac.nl/g7kbios.pdf
+- MAME EF9340/41 implementation, checked for PAL row mapping, block attributes
+  and LSB-first pixel order:
+  https://github.com/mamedev/mame/blob/master/src/devices/video/ef9340_1.cpp

@@ -1,0 +1,61 @@
+{
+  "width": 320,
+  "height": 240,
+  "columns": 40,
+  "rows": 24,
+  "tile_width": 8,
+  "tile_height": 10,
+  "unique_input_patterns": 297,
+  "stored_patterns": 96,
+  "pattern_bytes": 960,
+  "screen_bytes": 1920,
+  "service_row": "disabled; not included",
+  "cell_order": "row-major: attribute (R6/TA), character (R7/TB)",
+  "row_bits": "bit 0 is leftmost",
+  "codes": "A0-FF, block DRCS set",
+  "palette_rgb": [
+    [
+      0,
+      0,
+      0
+    ],
+    [
+      255,
+      0,
+      0
+    ],
+    [
+      0,
+      255,
+      0
+    ],
+    [
+      255,
+      255,
+      0
+    ],
+    [
+      0,
+      0,
+      255
+    ],
+    [
+      255,
+      0,
+      255
+    ],
+    [
+      0,
+      255,
+      255
+    ],
+    [
+      255,
+      255,
+      255
+    ]
+  ],
+  "pixels_changed_by_two_color_tiles": 1154,
+  "pixels_changed_by_pattern_budget": 1061,
+  "hardware_tested": false
+}
