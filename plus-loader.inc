@@ -112,6 +112,7 @@ service_cell
 	mov r7,#plus_cmd_loady0
 	mov r6,#0
 	call pluscmd
+	call maybe_intro
 	en i
 	call waitvsync
 	call plusenable
@@ -177,9 +178,94 @@ read_return
 	mov @r1,a
 	mov a,r6
 	ret
+
+; The title is stored as row/column/run-count commands in page 7 of banks
+; 2, 1 and 0. Only changed cells are written over the gameplay landscape.
+maybe_intro
+	mov r0,#03ch                   ; plus_active: 1=title, 2=gameplay restore
+	mov a,@r0
+	xrl a,#1
+	jnz intro_done
+	in a,p1                        ; full screen loading ended in bank 0
+	orl a,#2
+	outl p1,a                      ; continue at this address in bank 2
+	mov r0,#020h
+	mov @r0,#0
+intro_command
+	call intro_next
+	xrl a,#0ffh
+	jz intro_done
+	xrl a,#0ffh                    ; restore the row after the sentinel test
+	mov r1,#022h
+	mov @r1,a                      ; row
+	call intro_next
+	mov r1,#021h
+	mov @r1,a                      ; column survives the first Plus BIOS call
+	mov r7,#plus_cmd_brow
+	mov r1,#022h
+	mov a,@r1
+	mov r6,a
+	call pluscmd
+	mov r7,#plus_cmd_loadx
+	mov r1,#021h
+	mov a,@r1
+	mov r6,a
+	call pluscmd
+	call intro_next
+	mov r2,a                       ; number of RLE runs in this span
+intro_run
+	call intro_next
+	mov r4,a                       ; repeated cell count
+	call intro_next
+	mov r1,#021h
+	mov @r1,a                      ; parallel attribute
+	call intro_next
+	mov r7,a                       ; character code
+	mov r1,#021h
+	mov a,@r1
+	mov r6,a
+intro_repeat
+	call plusdata
+	djnz r4,intro_repeat
+	djnz r2,intro_run
+	jmp intro_command
+intro_done
+	ret
+
+intro_next
+	mov r0,#020h
+	mov a,@r0
+	mov r0,a
+	call intro_page_read
+	mov r5,a
+	inc r0
+	mov a,r0
+	xrl a,#240
+	jnz intro_store_offset
+	mov r0,#0
+	in a,p1
+	jb1 intro_bank1
+	anl a,#0fch                    ; bank 1 -> bank 0
+	outl p1,a
+	jmp intro_store_offset
+intro_bank1
+	anl a,#0fch                    ; bank 2 -> bank 1
+	orl a,#1
+	outl p1,a
+intro_store_offset
+	mov a,r0
+	mov r1,#020h
+	mov @r1,a
+	mov a,r5
+	ret
 	if $ > 0700h
 	fatal "Loader page 6 overflow"
 	endif
+
+	org 07f0h
+intro_page_read
+	movp a,@a
+	ret
 
 	org 07f8h
 loader_return

@@ -1,148 +1,132 @@
-# ArtGame review en correctie
+# BIRD HUNT Technical Review
 
-## Gevonden oorzaken
+## Current Status
 
-1. **P1: geheugenbank bleef verkeerd staan na CALL.** In de vorige ROM
-   schakelde `call shape_byte` op 0726h naar MB1. Na `ret` bleef de banklatch
-   op MB1 staan. De daaropvolgende `call gfxon` op 052ch werd daardoor een
-   sprong naar 0927h in plaats van BIOS-adres 0127h. Dezelfde fout zat in
-   `shoot`, `update_birds` en `shot_sound`. ASL compileerde dit zonder fout.
-   In de emulator liep de oude ROM na starten op 0947h met beschadigde
-   cursor- en vogelgegevens. Code en tabellen blijven volledig onder 0800h;
-   de assembler bewaakt de bovengrens van MB0.
+BIRD HUNT is an 8 KB, four-bank cartridge for the Videopac G7000/Odyssey2 and
+G7400. The current build assembles without errors or warnings and is exercised
+by PAL, NTSC, and G7400 integration tests using the real O2EM CPU, VDC, BIOS,
+sound, and Plus-video paths.
 
-2. **P2: onvolledige scherminitialisatie en kwetsbare interruptketen.**
-   De vogels kregen hun eerste posities pas nadat het beeld al aan stond.
-   De eigen VSYNC-routine sprong midden in de BIOS-routine en sloeg onder
-   meer de opslag van botsingsgegevens en de frameklok over. De vervanging
-   gebruikt de vaste vectoren 0400/0402/0404/0406/0408/040ah en de volledige
-   BIOS-routine `vsyncirq`. Alle vier sprites worden opgebouwd voordat de
-   graphics worden ingeschakeld. Tekst en quads worden verborgen.
+The game includes three birds per round, five bullets, miss flashes, falling
+birds, random flight paths, score and ammunition displays, pause/resume, round
+transitions, game over, consecutive perfect-round bonuses, a G7400 landscape,
+and a dedicated G7400 dawn title screen.
 
-3. **P2: raakdetectie en cursorcoordinaten waren niet consistent.**
-   De cursor gebruikte Y+4 als midden, terwijl 8 spriterijen 16 scanlijnen
-   innemen. Dat is nu Y+8. X wordt in hele VDC-pixels bijgehouden; de
-   halve-pixelbit wordt niet langer gevuld met het laagste bit van die X.
-   Al vallende vogels worden overgeslagen bij de raakdetectie.
+## Corrected Core Problems
 
-## Schermupdate
+### Memory-bank state after calls
 
-Joysticks en spelregels worden berekend voordat `waitvsync` wordt aangeroepen.
-Daarna: VDC selecteren, `gfxoff`, posities/kleuren/bitmaps schrijven, `gfxon`.
-Met een vogel per keer past ook een compacte bitmap-kopieerlus ruimschoots
-in de korte NTSC-blanking. Er zijn twee vleugelstanden en een rode valvorm. Het schotgeluid
-wordt na het opnieuw inschakelen van het beeld gestart. Vuur vasthouden
-blokkeert de spel-lus niet en geeft geen herhaalde schoten.
+Early code entered MB1 to fetch graphics data but returned without restoring the
+memory-bank latch. A later BIOS call then jumped into the wrong cartridge page.
+Core code and BIOS calls now use explicit MB0/MB1 transitions. The assembler and
+instrumented emulator both enforce the valid MB1 regions.
 
-## Verificatie
+### Screen initialization and interrupt chaining
 
-- ASL 1.42, build 274: 0 fouten, 0 waarschuwingen; ROM 2048 bytes.
-- De oude ROM faalt in dezelfde O2EM-test op de cursorinitialisatie.
-- De nieuwe ROM doorstaat de tests op zowel PAL als NTSC: initialisatie,
-  spritebitmaps, beweging per frame, alle schermgrenzen, misschoten,
-  raakschoten op elk van de drie vogels, verticaal vallen, opnieuw
-  verschijnen, vasthouden en opnieuw indrukken van vuur.
-- Geinstrumenteerde O2EM: 0 objectschrijfacties met foreground ingeschakeld,
-  0 spel-objectschrijfacties buiten VBlank en 0 instructies in MB1. De
-  eenmalige scherminitialisatie valt buiten de VBlank-meetperiode; die
-  gebeurt wel met foreground uitgeschakeld.
-- Visueel gecontroleerd: door O2EM gerenderde PAL-beelden van vliegen en
-  vallen. De ROM is ook in de geinstalleerde O2Em-app geopend.
-- Geen test op fysieke G7000-hardware uitgevoerd.
+Sprites were previously positioned after video output had already been enabled,
+and an incomplete VSYNC hook skipped parts of the BIOS frame handling. The
+cartridge now uses the standard vectors at `0400h` through `040Ah`, initializes
+all sprites, characters, quads, grid state, and RAM before display enable, and
+chains through the complete BIOS VSYNC routine.
 
-`check_rom.py` voert de gecompileerde ROM uit in de echte O2EM CPU/VDC-core,
-met het G7000-BIOS (CRC32 8016a315), en stuurt joystickinvoer. Het bevat geen
-BIOS. Voor herhalen met een eigen BIOS en gebouwde libretro-O2EM-core:
+### Hit detection and coordinates
 
-```sh
-python3 check_rom.py /pad/o2em_libretro.dylib /map/met/bios artgame.bin PAL
-python3 check_rom.py /pad/o2em_libretro.dylib /map/met/bios artgame.bin NTSC
-```
+The crosshair originally used an inconsistent vertical center and mixed full
+VDC pixels with the half-pixel position bit. Hit testing now uses the visual
+center of the 8-row sprite, keeps X in whole VDC pixels, and ignores birds that
+are already falling.
 
-De tests schrijven `intro-*`, `flying-*`, `miss-*` en `falling-*` PNG-beelden naast de
-ROM. De optionele timingcontroles vereisen `test-core.patch`; zonder die
-patch meldt het script expliciet dat de timinginstrumentatie ontbreekt.
+### Input latching
 
-## Update: BIRD HUNT, lucht en gras (2026-09-13)
+FIRE is edge-latched so holding the button cannot consume multiple bullets.
+Leaving the title screen, crossing a round boundary, and resuming from pause all
+consume the current press without firing. A held keyboard key cannot immediately
+pause the game again after resume.
 
-De intro toont negen gekleurde tekens, `BIRD HUNT`, op zwart. Tijdens het
-spel zet een VSYNC-hook de achtergrond weer blauw en activeert de
-scanlijnteller. De timer-interrupt wacht op de ingestelde Y-positie en
-schrijft groen op de eerstvolgende HBlank. Hiervoor wordt T1 gebruikt:
-de horizontale statusbit in A1h is niet hetzelfde als het HBlank-signaal.
-De interrupt bewaart A/P1, gebruikt RB0 en laat de BIOS-geluidsregisters
-R3/R4 intact. De volledige BIOS-VSYNC-afhandeling blijft actief.
+### Sound initialization
 
-In het 250-regelige O2EM-beeld zijn regels 0-149 blauw en 150-249 groen.
-Dat is 60% lucht en 40% gras; de zichtbare uitsnede van een fysieke TV kan
-door overscan afwijken. Het schotgeluid blijft `tune_shoot`.
+`tune_shoot` changes sound control but does not initialize the shift-register
+waveform. The HUD initialization now seeds a nonzero waveform before the first
+shot while keeping output muted. Tests verify audible first shots after cold
+start and repeated resets.
 
-De bestaande speltests en nieuwe beeldtests slagen op PAL en NTSC. Tijdens
-meer dan 1600 gecontroleerde frames per modus blijft de horizon op regel
-150: geen extra kleurbanden en geen verschuivingen. De instrumentatie telt
-0 objectschrijfacties met foreground aan, 0 objectschrijfacties buiten
-VBlank, 0 gras-kleurwissels buiten HBlank en 0 instructies in MB1.
-De ROM blijft 2048 bytes; ASL meldt 0 fouten en 0 waarschuwingen.
+## Video and Timing
 
-De T1-aansluiting en de verschillende betekenis van de horizontale statusbit
-zijn ook gecontroleerd in de primaire MAME-broncode:
-[T1 = VBlank of HBlank](https://github.com/mamedev/mame/blob/master/src/mame/philips/odyssey2.cpp)
-en [8244/8245-status en beam counters](https://github.com/mamedev/mame/blob/master/src/devices/video/i8244.cpp).
+Gameplay input and state updates occur before `waitvsync`. During VBlank the
+game selects the VDC, disables foreground output, writes object positions,
+colors, and bitmaps, then enables output again. Instrumented tests report no
+object writes while foreground is active and no gameplay object writes outside
+VBlank.
 
-## Update: rondes en missers (2026-09-17)
+On G7000, a timer interrupt uses the VDC beam counter and T1 HBlank/VBlank input
+to switch from blue sky to green grass at scanline 150. The interrupt preserves
+A, P1, and BIOS sound registers. On G7400, this raster interrupt is skipped and
+the EF9340/41 Plus layer supplies the landscape.
 
-- Iedere ronde heeft drie vogels, een voor een. De volgende verschijnt
-  nadat de vorige uit beeld is gevlogen of na een treffer naar beneden is gevallen.
-- Vijf schoten per volledige ronde. Elke nieuwe druk verbruikt een schot;
-  vasthouden geeft geen herhaalde schoten. Met nul schoten blijven de vogels
-  doorvliegen; extra drukken leveren geen schot, geluid of misserflits op.
-- Een misser toont acht frames een witte ronde vlek op de vastgelegde
-  schotpositie. De cursor kan ondertussen onafhankelijk bewegen. Sprite 0
-  is het vizier, sprite 1 de enige vogel, sprite 2 de flits; sprite 3 blijft verborgen.
-- Een 8-bit LFSR bepaalt startkant, starthoogte en veranderende verticale
-  helling. De intro-wachttijd varieert de beginwaarde. Reflecties houden
-  vliegende vogels op Y=32..128, volledig boven de horizon; treffers vallen recht omlaag.
-- Na vogel drie klinkt `tune_select2`, met 30 frames pauze (0.5-0.6 seconde).
-  Daarna begint een nieuwe ronde met vijf schoten. Een ingedrukte vuurknop
-  vuurt niet automatisch bij het aanvullen. Gewone schoten behouden `tune_shoot`.
+## G7400 Loader
 
-`check_rom.py` controleert de misserpositie en levensduur, nul-ammo,
-drie opeenvolgende vogels, treffers en vallen, rondegeluid, aanvullen en
-ingedrukt houden over een rondegrens. Een langere test controleert meerdere
-volledige rondes, verschillende paden en beide startkanten. Beide modi
-(PAL/NTSC) slagen, met meer dan 3000 gecontroleerde frames, een horizon op
-regel 150 en nul onveilige object- of kleurwrites. Ook de misser- en
-valbeelden zijn gerenderd. Code en data eindigen op 07b4h; de ROM blijft
-2048 bytes. Geen nieuwe test op fysieke hardware uitgevoerd.
+The European G7400 BIOS is detected before any Plus-only call. Banks 0-2 share
+the same loader code. Bank 2 stores 96 DRCS patterns; banks 1 and 0 store the
+upper and lower screen halves. The title is a 256-byte row/column/run encoded
+difference layer split across free page-7 storage.
 
-## Update: totaalscore (2026-09-17)
+Cold start uploads patterns and gameplay cells, then applies the dawn title.
+The title includes `AHNL66's`, `BIRD HUNT`, `PRESS FIRE`, a sun, and two protected
+bird silhouettes. FIRE hides the layer while the loader restores only the
+gameplay cells. The return bridge selects either title initialization or game
+initialization without re-entering the public cartridge reset vector.
 
-Onderaan in het gras staat `SCORE 00000`. Elke treffer telt eenmaal mee voor
-de huidige ronde. Pas na afloop van de derde vogel wordt de totaalscore
-bijgewerkt: 1 treffer geeft 1 punt, 2 geven 5 punten en 3 geven 10 punten.
-Zonder treffers wordt het totaal gehalveerd, afgerond naar beneden.
-Een nieuwe ronde wist alleen de rondetreffers, niet de totaalscore.
-De 16-bit score stopt bij 65535 in plaats van terug te springen naar nul.
+The two public entry points, reset at `0400h` and menu launch at `0408h`, both
+perform full initialization. Tests verify title graphics and sound after cold
+start, menu start, game over, and three consecutive resets.
 
-RAM 33h bevat de rondetreffers, 34h/35h de totaalscore, 36h de resterende
-te verversen cijfers en 37h..3bh de decimale cijfers. Conversie gebeurt
-buiten de schermupdate; per VBlank wordt hoogstens een cijfer geschreven.
-De vijf cijfers zijn binnen vijf frames bijgewerkt. Code en data eindigen
-op 07e9h, volledig in MB0; de ROM blijft 2048 bytes.
+## Round and Score Logic
 
-PAL- en NTSC-tests controleren echte joysticktreffers, uitgestelde bijtelling,
-alle vier ronde-uitkomsten, oneven halvering, nul, carry, maximumscore,
-de decimale cijfers en hun VDC-tekencodes. Rekengrenzen worden getest via
-RAM-fixtures waarna de echte ROM de ronde afhandelt. Beide modi doorlopen
-meer dan 3500 frames zonder onveilige VDC-writes, MB1-uitvoering of
-kleurwissels buiten HBlank. De horizon blijft op regel 150.
-Het scorebeeld is visueel gecontroleerd; niet opnieuw op fysieke hardware getest.
+Each round contains three sequential birds and five bullets. A miss displays a
+fixed white patch for eight frames. A nonzero LFSR selects starting side, height,
+and vertical turns while keeping flying birds above the horizon.
 
-## Bronnen
+Round scoring is applied once after the third bird:
 
-- De meegeleverde `../PROGRAMMING MANUAL.md` van Soeren Gust: paragrafen
-  2.6 (vectoren), 9.1 (VSYNC), 10.1 (MB0/MB1), 16.4 (sprites) en
-  17.14-17.17/17.45-17.49 (BIOS-aanroepen en gereserveerd RAM).
-- [libretro O2EM](https://github.com/libretro/libretro-o2em), revisie
-  `679d6fec04963f6e70a7ec217e3d0ebb1fe472fc`: `src/cpu.c`, `src/vdc.c`,
-  `src/vmachine.c` en `libretro.c` voor uitvoering en timingcontrole.
+- Zero hits halves the total, rounds down, and plays `tune_alarm` once.
+- One hit adds 1 point.
+- Two hits add 5 points.
+- Three hits add 10 points plus 5 per remaining bullet.
+- Three hits with two bullets remaining form a perfect round.
+
+Consecutive perfect rounds award 20, 40, 80, 160 points, and so on. A
+non-perfect round clears the streak. The total saturates at 65,535. If a
+zero-hit halving reaches zero, the same single alarm leads into a two-second
+game-over delay and a fresh title screen.
+
+## Verification
+
+`check_rom.py` runs the compiled cartridge through O2EM and verifies:
+
+- PAL and NTSC title, gameplay, horizon, and game-over timing.
+- G7400 DRCS bytes, title cells, gameplay cells, composite colors, and resets.
+- Crosshair movement during round waits and correct FIRE consumption.
+- Five-shot limits, held-trigger behavior, miss position and lifetime.
+- Exactly three sequential birds, both starting sides, varied paths, and falls.
+- Round sounds, start buzz, happy-sound repetition, and zero-hit alarms.
+- Score halving, odd-value rounding, carry, saturation, visible digits, and
+  perfect-round doubling/reset behavior.
+- Keyboard pause/resume and frozen gameplay state.
+- Safe VDC write windows, MB1 execution regions, and HBlank-only grass changes.
+
+`tools/test_background.py` additionally verifies binary sizes, bit order,
+attributes, decoded previews, exact white title pixels, exact bird silhouettes,
+and reconstruction of `intro-screen.bin` from `screen.bin` plus `intro-rle.bin`.
+
+The ROM has not yet been revalidated on physical G7400 hardware after the final
+title-screen revision. Emulator output cannot fully model television overscan,
+analog color levels, or every regional BIOS variant.
+
+## References
+
+- Soeren Gust, G7000 programming manual and BIOS definitions.
+- [libretro O2EM](https://github.com/libretro/libretro-o2em), revision
+  `679d6fec04963f6e70a7ec217e3d0ebb1fe472fc`.
+- [MAME Odyssey2 driver](https://github.com/mamedev/mame/blob/master/src/mame/philips/odyssey2.cpp).
+- [MAME Intel 8244/8245 implementation](https://github.com/mamedev/mame/blob/master/src/devices/video/i8244.cpp).
+- [MAME EF9340/41 implementation](https://github.com/mamedev/mame/blob/master/src/devices/video/ef9340_1.cpp).

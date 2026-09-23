@@ -22,7 +22,7 @@ birds_left equ 02ah              ; includes the currently flying/falling bird
 flash_time equ 02bh
 round_time equ 02ch
 anim_clock equ 02dh
-game_active equ 02eh
+game_active equ 02eh              ; bit 0 active, bits 1-4 perfect streak, 6/7 key/pause
 sound_event equ 02fh
 random_state equ 030h
 flash_x equ 031h
@@ -62,9 +62,8 @@ start
 	mov @r0,#0
 	call waitvsync
 	call gfxoff
-	mov r0,#vdc_color
-	mov a,#col_bck_black
-	movx @r0,a
+	call prepare_intro
+	jnz intro_ready                 ; G7400 title text is already in Plus graphics
 	mov r0,#iram_clock
 	mov @r0,#080h                   ; do not run the BIOS on-screen clock
 	mov r0,#vdc_char0
@@ -83,6 +82,7 @@ intro_char
 	call printchar
 	inc r1
 	djnz r2,intro_char
+intro_ready
 	call gfxon
 wait_fire
 	call random_byte                ; seed depends on how long the player waits
@@ -107,7 +107,7 @@ hide_text
 	movx @r0,a
 	inc r0
 	djnz r2,hide_text
-	call init_game
+	call start_game_setup           ; reloads the clean Plus landscape when needed
 	call begin_round_wait
 	call init_score_label
 	call reveal_plus
@@ -214,17 +214,6 @@ plain_console
 game_loop
 	sel mb1
 	jmp extended_loop
-
-perfect_bonus
-	mov r0,#ammo
-	mov a,@r0
-	mov r2,a
-	rl a
-	rl a
-	add a,r2
-	add a,#10
-	mov r2,a
-	ret
 
 begin_round_wait
 	mov r0,#bird_ram+2
@@ -383,6 +372,42 @@ draw_score
 	call printchar
 score_draw_done
 	ret
+
+prepare_intro
+	mov r0,#plus_active
+	mov a,@r0
+	jnz prepare_plus_intro
+	ret                            ; A is zero; BIOS init left the title black
+prepare_plus_intro
+	mov r0,#vdc_color
+	mov a,#col_bck_blue             ; mixer exposes the Plus title through blue
+	movx @r0,a
+	call reveal_plus
+	mov a,#1
+	ret
+
+; This routine is entered with a CALL. The loader bridge eventually jumps to
+; init_game, whose RET returns to the original caller after the bank round-trip.
+start_game_setup
+	mov r0,#plus_active
+	mov a,@r0
+	jz plain_game_setup
+	inc @r0                        ; 1 -> 2: restore, do not reapply, the title
+	call plusenable
+	call plushide
+	jmp bank01                      ; bank 3 -> bank 1 screen loader at 0408h
+plain_game_setup
+	jmp init_game
+
+loader_bridge
+	mov r0,#plus_active
+	mov a,@r0
+	dec a
+	jz loader_to_title
+	mov @r0,#1
+	jmp init_game
+loader_to_title
+	jmp start
 	if $ > 0600h
 	fatal "Page 5 overflow"
 	endif
@@ -458,7 +483,9 @@ bird_finished
 	call spawn_bird
 	ret
 round_finished
+	sel mb1
 	call settle_score
+	sel mb0
 	mov r0,#bird_ram+2
 	mov @r0,#2
 	mov r0,#round_time
@@ -694,44 +721,6 @@ bird_fall
 miss_shape
 	db 000h,018h,03ch,07eh,07eh,03ch,018h,000h
 
-; Called exactly once when the third bird has left or finished falling.
-settle_score
-	mov r0,#round_hits
-	mov a,@r0
-	jz halve_score
-	mov r2,#1
-	dec a
-	jz add_score
-	mov r2,#5
-	dec a
-	jz add_score
-	call perfect_bonus
-add_score
-	mov r0,#score_lo
-	mov a,@r0
-	add a,r2
-	mov @r0,a
-	inc r0
-	mov a,@r0
-	addc a,#0
-	jnc store_score_high
-	mov a,#0ffh                    ; saturate instead of wrapping the total
-	mov @r0,a
-	dec r0
-store_score_high
-	mov @r0,a
-	jmp score_decimal
-halve_score
-	mov r0,#score_hi
-	mov a,@r0
-	clr c
-	rrc a
-	mov @r0,a
-	dec r0
-	mov a,@r0
-	rrc a                          ; carry transfers the high byte's lowest bit
-	mov @r0,a
-	jmp score_decimal
 ; The HUD helper makes no BIOS calls and restores the MB0 latch explicitly.
 draw_hud
 	db 0f5h                        ; SEL MB1, hidden from ASL bank inference
@@ -743,14 +732,14 @@ hud_return
 	ret
 rom_end
 	if rom_end > 0800h
-	fatal "ArtGame exceeded MB0; review every CALL/JMP before using MB1"
+	fatal "BIRD HUNT exceeded MB0; review every CALL/JMP before using MB1"
 	endif
 	if $ > 07f8h
 	fatal "Game overlaps loader return bridge"
 	endif
 	org 07f8h
 	orl p1,#3                      ; shared address with loader bank-switch bridge
-	jmp start                      ; loader return only; never the public 0408 entry
+	jmp loader_bridge              ; select title startup or post-title game setup
 
 	org 0800h
 ; Char A is the fifth cartridge; quad 0 contains the first four. Char B stays
@@ -980,6 +969,8 @@ happy_event
 event_done
 	ret
 no_hits_end
+	mov r0,#sound_event
+	mov @r0,#tune_alarm             ; every zero-hit round announces the halving
 	mov r0,#score_lo
 	mov a,@r0
 	inc r0
@@ -988,8 +979,6 @@ no_hits_end
 	mov r0,#bird_ram+2
 	mov @r0,#3
 	call two_second_timer
-	mov r0,#sound_event
-	mov @r0,#tune_alarm
 	ret
 two_second_timer
 	; Measure VBlank before starting the alarm: PAL ~D6, NTSC ~34.
@@ -1015,7 +1004,118 @@ set_gameover_time
 	mov a,r2
 	mov @r0,a
 	mov r0,#game_active
-	mov @r0,#1
+	mov a,@r0
+	anl a,#01eh                    ; preserve only the perfect-run streak
+	orl a,#1
+	mov @r0,a
+	ret
+
+; Called exactly once when the third bird has left or finished falling.
+; The perfect streak is encoded as twice its count in game_active bits 1-4.
+settle_score
+	mov r0,#round_hits
+	mov a,@r0
+	jz break_streak_halve
+	mov r2,#1
+	mov r3,#0
+	dec a
+	jz break_streak_add
+	mov r2,#5
+	dec a
+	jz break_streak_add
+	mov r0,#ammo
+	mov a,@r0
+	mov r2,a
+	xrl a,#2
+	jz perfect_score
+	; Three hits without two bullets left keeps the ordinary 10/15-point rule.
+	mov a,r2
+	rl a
+	rl a
+	add a,r2
+	add a,#10
+	mov r2,a
+	mov r3,#0
+break_streak_add
+	call clear_perfect_streak
+	jmp add_round_score
+break_streak_halve
+	call clear_perfect_streak
+	mov r0,#score_hi
+	mov a,@r0
+	clr c
+	rrc a
+	mov @r0,a
+	dec r0
+	mov a,@r0
+	rrc a                          ; carry transfers the high byte's lowest bit
+	mov @r0,a
+	call_base score_decimal
+	ret
+perfect_score
+	mov r0,#game_active
+	mov a,@r0
+	mov r5,a
+	anl a,#01eh
+	mov r4,a                       ; old streak, also the shift count times two
+	xrl a,#01ah                    ; 13+ rounds all exceed the 16-bit score range
+	jz perfect_streak_stored
+	mov a,r4
+	add a,#2
+	mov r4,a
+perfect_streak_stored
+	mov a,r5
+	anl a,#0e1h                    ; retain active and keyboard/pause flags
+	orl a,r4
+	mov @r0,a
+	mov a,r4
+	add a,#0feh                    ; divide the updated encoded count by two
+	rr a                           ; award uses the previous count: 20 << (n-1)
+	anl a,#00fh
+	mov r4,a
+	mov r2,#20
+	mov r3,#0
+	mov a,r4
+	jz add_round_score
+perfect_shift
+	mov a,r2
+	clr c
+	rlc a
+	mov r2,a
+	mov a,r3
+	rlc a
+	mov r3,a
+	jc max_round_award
+	djnz r4,perfect_shift
+	jmp add_round_score
+max_round_award
+	mov r2,#0ffh
+	mov r3,#0ffh
+add_round_score
+	mov r0,#score_lo
+	mov a,@r0
+	add a,r2
+	mov @r0,a
+	inc r0
+	mov a,@r0
+	addc a,r3
+	jnc store_round_score
+score_overflow
+	mov a,#0ffh                    ; saturate instead of wrapping the total
+	mov @r0,a
+	dec r0
+	mov @r0,a
+	jmp round_score_changed
+store_round_score
+	mov @r0,a
+round_score_changed
+	call_base score_decimal
+	ret
+clear_perfect_streak
+	mov r0,#game_active
+	mov a,@r0
+	anl a,#0e1h
+	mov @r0,a
 	ret
 	if $ > 0b00h
 	fatal "Round events crossed page"

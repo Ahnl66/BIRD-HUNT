@@ -27,6 +27,34 @@ class BackgroundTests(unittest.TestCase):
         self.assertLessEqual(len(set(screen[1::2])), 96)
         self.assertEqual(set(np.unique(pixels)), {0, 2, 3, 4})
 
+        intro = (OUT / "intro-screen.bin").read_bytes()
+        intro_pixels = decode(patterns, intro)
+        intro_expected = PALETTE[intro_pixels].astype(np.uint8)
+        np.testing.assert_array_equal(
+            np.array(Image.open(OUT / "intro-preview-native.png")), intro_expected)
+        self.assertGreater(np.count_nonzero(intro_pixels == 7), 500)
+        source = np.array(Image.open(OUT / "intro-source.png").convert("RGB"))
+        np.testing.assert_array_equal(intro_pixels == 7, np.all(source == 255, axis=2))
+        for x, y in ((224, 90), (272, 110)):
+            np.testing.assert_array_equal(intro_expected[y:y + 10, x:x + 16],
+                                          source[y:y + 10, x:x + 16])
+        self.assertLessEqual((OUT / "intro-rle.bin").stat().st_size, 720)
+
+    def test_intro_delta_round_trip(self):
+        screen = bytearray((OUT / "screen.bin").read_bytes())
+        encoded = iter((OUT / "intro-rle.bin").read_bytes())
+        for row in encoded:
+            if row == 0xff:
+                break
+            column, run_count = next(encoded), next(encoded)
+            for _ in range(run_count):
+                count, attr, code = next(encoded), next(encoded), next(encoded)
+                for _ in range(count):
+                    offset = (row * 40 + column) * 2
+                    screen[offset:offset + 2] = bytes((attr, code))
+                    column += 1
+        self.assertEqual(bytes(screen), (OUT / "intro-screen.bin").read_bytes())
+
     def test_assembly_matches_binary(self):
         data = bytearray()
         for line in (OUT / "background.inc").read_text().splitlines():

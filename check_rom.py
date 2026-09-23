@@ -1,7 +1,7 @@
 """Execute the real ROM/BIOS in libretro O2EM; no BIOS is bundled.
 
 Usage: python3 check_rom.py CORE_DYLIB BIOS_DIRECTORY ROM [PAL|NTSC] [G7400]
-The optional artgame_test_* exports come from the instrumented test core.
+The optional birdhunt_test_* exports come from the instrumented test core.
 """
 import ctypes as C
 from pathlib import Path
@@ -102,6 +102,14 @@ def run(frames=1, held=()):
             check_landscape()
 
 
+def await_title_start():
+    for _ in range(400 if plus else 20):
+        run()
+        if ram[0x23] == 5 and ram[0x26] == 5:
+            return
+    raise AssertionError("title did not enter the first-round countdown")
+
+
 def check_landscape():
     if plus:
         return  # Plus memory and composite pixels are checked separately below.
@@ -193,26 +201,35 @@ run(400 if plus else 20)
 print("Intro:", snapshot(), flush=True)
 assert ram[0x3c] == int(plus), "wrong console detection"
 if plus:
-    def check_plus_data():
+    def check_plus_data(screen_name):
         patterns = (rom_path.parent / "assets/g7400/patterns.bin").read_bytes()
         chars = (C.c_uint8 * 1920).in_dll(core, "dchars")
         reverse = lambda b: int(f"{b:08b}"[::-1], 2)
         assert bytes(chars[960:]) == bytes(map(reverse, patterns)), ("DRCS upload mismatch", list(ram[0x18:0x20]), hex(C.c_uint8.in_dll(core, "p1").value), [(i, chars[960+i], reverse(b)) for i, b in enumerate(patterns) if chars[960+i] != reverse(b)][:12])
-        screen = (rom_path.parent / "assets/g7400/screen.bin").read_bytes()
+        screen = (rom_path.parent / "assets/g7400" / screen_name).read_bytes()
         cells = (C.c_uint8 * (40 * 32 * 4)).in_dll(core, "vpp_mem")
         for row in range(24):
             for col in range(40):
                 i = (col * 32 + row) * 4
                 j = (row * 40 + col) * 2
-                assert (cells[i+1], cells[i]) == tuple(screen[j:j+2]), ("cell", row, col)
-    check_plus_data()
-    C.c_uint.in_dll(core, "artgame_test_mb1_instructions").value = 0
-assert vdc[0xa3] == 0, "intro background is not black"
-assert sum(vdc[i] != 248 for i in range(0x10, 0x40, 4)) == 9, "title must have nine slots"
-assert vdc[0x10] == 112, "title not moved down one row"
+                assert (cells[i+1], cells[i]) == tuple(screen[j:j+2]), (
+                    "cell", screen_name, row, col, (cells[i+1], cells[i]),
+                    tuple(screen[j:j+2]))
+    check_plus_data("intro-screen.bin")
+    C.c_uint.in_dll(core, "birdhunt_test_mb1_instructions").value = 0
+if plus:
+    assert vdc[0xa3] == 8, "G7400 title does not expose the Plus graphic"
+    assert all(vdc[i] == 248 for i in range(0x10, 0x40, 4)), \
+        "ordinary Videopac title is visible over the G7400 graphic"
+    check_plus_picture()
+else:
+    assert vdc[0xa3] == 0, "plain-console intro background is not black"
+    assert sum(vdc[i] != 248 for i in range(0x10, 0x40, 4)) == 9, \
+        "plain-console title must have nine slots"
+    assert vdc[0x10] == 112, "plain-console title not moved down one row"
 screenshot("intro")
 run(2, (0,))
-run(7)
+await_title_start()
 assert ram[0x23] == 5 and ram[0x26] == 5, "first round bypassed countdown"
 assert (100 if mode == "PAL" else 120) - 10 <= ram[0x2c] <= (100 if mode == "PAL" else 120)
 buzz_before = C.c_uint.in_dll(core, "birdhunt_buzz").value
@@ -239,7 +256,7 @@ assert list(ram[0x37:0x3c]) == [0] * 5
 assert vdc[0x10] == 220
 ram[0x34] = 32  # Avoid game-over in the old empty-ammo/round-flow scenario.
 try:
-    C.c_uint.in_dll(core, "artgame_test_monitor").value = 1
+    C.c_uint.in_dll(core, "birdhunt_test_monitor").value = 1
 except ValueError:
     pass
 screenshot("flying")
@@ -250,6 +267,7 @@ def check_ammo_icons(expected):
 
 check_ammo_icons(5)
 if plus:
+    check_plus_data("screen.bin")
     check_plus_picture()
 check_landscape()
 check_background = True
@@ -403,9 +421,13 @@ for total, hits, expected in ((32, 0, 16), (0, 1, 1), (1, 2, 6), (6, 3, 26),
     ram[0x2a] = 1
     ram[0x26] = 1
     ram[0x25] = 212
+    alarms_before = C.c_uint.in_dll(core, "birdhunt_alarm").value
     run(4)
     actual = ram[0x34] + 256 * ram[0x35]
     assert actual == expected, (total, hits, expected, actual)
+    alarms_after = C.c_uint.in_dll(core, "birdhunt_alarm").value
+    assert alarms_after - alarms_before == int(hits == 0), \
+        ("wrong zero-hit alarm count", total, hits, alarms_before, alarms_after)
     assert list(ram[0x37:0x3c]) == [int(d) for d in f"{expected:05d}"]
     run(6)
     assert ram[0x36] == 0, "score digits not fully refreshed"
@@ -419,7 +441,7 @@ for total, hits, expected in ((32, 0, 16), (0, 1, 1), (1, 2, 6), (6, 3, 26),
     await_round()
     assert ram[0x34] + 256 * ram[0x35] == expected, "new round reset total"
     assert ram[0x33] == 0, "new round did not clear hit count"
-print("Score: all awards, floor halving, carry, saturation and display refresh passed")
+print("Score: all awards, floor halving, zero-hit alarm, carry, saturation and display refresh passed")
 
 # Bonus and exact one/three happy tune dispatches, including the no-ammo case.
 for bullets in (0, 1, 2):
@@ -447,15 +469,63 @@ for key in (ord('a'), ord('5'), 13):
     run(2)
 print("Bonus, one/triple happy tune and keyboard pause/resume passed")
 
+# Consecutive perfect rounds double only the perfect-round award. Any other
+# round breaks the streak, after which the next perfect round is worth 20 again.
+ram[0x34], ram[0x35] = 0, 0
+ram[0x2e] &= 0xe1
+perfect_total = 0
+for streak, award in enumerate((20, 40, 80, 160, 320), 1):
+    ram[0x33], ram[0x23] = 3, 2
+    ram[0x2c], ram[0x2a], ram[0x26], ram[0x25] = 0, 1, 1, 212
+    before = C.c_uint.in_dll(core, "birdhunt_happy").value
+    run(2)
+    perfect_total += award
+    assert ram[0x34] + 256 * ram[0x35] == perfect_total, (streak, award, snapshot())
+    assert (ram[0x2e] & 0x1e) == 2 * streak, "perfect streak was not retained"
+    await_round()
+    assert C.c_uint.in_dll(core, "birdhunt_happy").value - before == 3
+
+ram[0x33], ram[0x23] = 2, 3
+ram[0x2c], ram[0x2a], ram[0x26], ram[0x25] = 0, 1, 1, 212
+run(2)
+perfect_total += 5
+assert ram[0x34] + 256 * ram[0x35] == perfect_total
+assert (ram[0x2e] & 0x1e) == 0, "non-perfect round did not break the streak"
+await_round()
+
+ram[0x33], ram[0x23] = 3, 2
+ram[0x2c], ram[0x2a], ram[0x26], ram[0x25] = 0, 1, 1, 212
+run(2)
+assert ram[0x34] + 256 * ram[0x35] == perfect_total + 20
+assert (ram[0x2e] & 0x1e) == 2, "perfect streak did not restart at 20"
+await_round()
+
+# The twelfth perfect award is 40960; later values exceed 16 bits and saturate.
+ram[0x34], ram[0x35], ram[0x2e] = 0, 0, (ram[0x2e] & 0xe1) | 22
+ram[0x33], ram[0x23] = 3, 2
+ram[0x2c], ram[0x2a], ram[0x26], ram[0x25] = 0, 1, 1, 212
+run(2)
+assert ram[0x34] + 256 * ram[0x35] == 40960
+assert (ram[0x2e] & 0x1e) == 24
+await_round()
+ram[0x34], ram[0x35] = 0, 0
+ram[0x33], ram[0x23] = 3, 2
+ram[0x2c], ram[0x2a], ram[0x26], ram[0x25] = 0, 1, 1, 212
+run(2)
+assert ram[0x34] + 256 * ram[0x35] == 65535, ("13th perfect", ram[0x34] + 256 * ram[0x35], ram[0x2e], snapshot())
+assert (ram[0x2e] & 0x1e) == 26, "perfect streak cap changed"
+await_round()
+print("Consecutive perfect-run doubling, streak reset and saturation passed")
+
 try:
-    counts = {name: C.c_uint.in_dll(core, "artgame_test_" + name).value for name in
+    counts = {name: C.c_uint.in_dll(core, "birdhunt_test_" + name).value for name in
               ("unsafe_writes", "active_writes", "mb1_instructions", "last_on_clock",
                "unblanked_color", "grass_writes")}
     print("Hardware checks:", counts)
     assert counts["unsafe_writes"] == 0, "VDC object writes with foreground enabled"
     assert counts["active_writes"] == 0, "game VDC writes outside vertical blank"
     assert counts["mb1_instructions"] > 0, "ammo HUD was not executed"
-    assert C.c_uint.in_dll(core, "artgame_test_bad_mb1").value == 0, "execution escaped the HUD code in MB1"
+    assert C.c_uint.in_dll(core, "birdhunt_test_bad_mb1").value == 0, "execution escaped the HUD code in MB1"
     assert counts["unblanked_color"] == 0, "grass color changed outside HBlank"
     if plus:
         assert counts["grass_writes"] == 0, "G7400 unexpectedly uses horizon IRQ"
@@ -468,7 +538,7 @@ print("Final:", snapshot())
 if not plus:
     print("Landscape: 60% blue / 40% green; observed horizon rows:", sorted(observed_horizons))
 check_background = False
-C.c_uint.in_dll(core, "artgame_test_monitor").value = 0
+C.c_uint.in_dll(core, "birdhunt_test_monitor").value = 0
 # Both zero and one halve to zero. Wait must be 100 PAL / 120 NTSC frames.
 for total in (0, 1):
     ram[0x34], ram[0x35], ram[0x33] = total, 0, 0
@@ -485,22 +555,28 @@ for total in (0, 1):
     run(delay - 3)
     assert ram[0x26] == 3, "game over ended too early"
     run(400 if plus else 20)
-    assert ram[0x2e] == 0 and vdc[0x10] == 112, "game over did not return to title"
+    assert ram[0x2e] == 0, "game over did not return to title"
+    if plus:
+        assert vdc[0xa3] == 8 and vdc[0x10] == 248
+        check_plus_data("intro-screen.bin")
+    else:
+        assert vdc[0x10] == 112
     run(2, (0,))
-    run(12)
+    await_title_start()
     await_round()
     assert ram[0x23] == 5 and ram[0x34] == 0 and ram[0x35] == 0
 print("Game over: alarm, two-second delay, title and fresh restart passed")
 if plus:
-    C.c_uint.in_dll(core, "artgame_test_monitor").value = 0
+    C.c_uint.in_dll(core, "birdhunt_test_monitor").value = 0
     for _ in range(3):
         core.retro_reset()
         run(400)
         assert ram[0x3c] == 1 and ram[0x2e] == 0, "reset did not return to intro"
-        check_plus_data()
+        check_plus_data("intro-screen.bin")
         run(2, (0,))
-        run(10)
+        await_title_start()
         await_round()
+        check_plus_data("screen.bin")
         before = tuple(ram[0x24:0x26])
         run(20)
         assert tuple(ram[0x24:0x26]) != before, "frozen after reset"

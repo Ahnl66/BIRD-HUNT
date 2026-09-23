@@ -20,10 +20,17 @@ def assemble(source, output):
 
 screen = (ROOT / "assets/g7400/screen.bin").read_bytes()
 patterns = (ROOT / "assets/g7400/patterns.bin").read_bytes()
+intro_rle = (ROOT / "assets/g7400/intro-rle.bin").read_bytes()
 assert len(screen) == 1920 and len(patterns) == 960
+assert len(intro_rle) <= 720
+intro_rle = intro_rle.ljust(720, b"\xff")
 banks = []
 for bank, data in enumerate((screen[960:], screen[:960], patterns)):
-    lines = ['cpu 8048', 'include "../include/g7000.h"', 'include "../plus-loader.inc"']
+    intro_block = intro_rle[(2 - bank) * 240:(3 - bank) * 240]
+    lines = ['cpu 8048', 'include "../include/g7000.h"', 'org 0700h']
+    for offset in range(0, 240, 16):
+        lines.append("db " + ",".join(f"0{x:02x}h" for x in intro_block[offset:offset+16]))
+    lines.append('include "../plus-loader.inc"')
     for page in range(4):
         lines.append(f"org 0{8+page:x}00h")
         block = data[page*240:(page+1)*240]
@@ -35,6 +42,7 @@ for bank, data in enumerate((screen[960:], screen[:960], patterns)):
     banks.append(assemble(source, BUILD / f"bank{bank}.bin"))
 banks.append(assemble(ROOT / "bird-hunt.asm", BUILD / "bank3.bin"))
 # Switch continuations must be byte-identical across all loader banks.
-assert banks[0][:1024] == banks[1][:1024] == banks[2][:1024]
+assert banks[0][:768] == banks[1][:768] == banks[2][:768]
+assert banks[0][1008:1024] == banks[1][1008:1024] == banks[2][1008:1024]
 (ROOT / "bird-hunt.bin").write_bytes(b"".join(banks))
 print("BIRD HUNT: 8192 bytes, standard four-bank cartridge")

@@ -5,7 +5,7 @@
   "rows": 24,
   "tile_width": 8,
   "tile_height": 10,
-  "unique_input_patterns": 297,
+  "unique_input_patterns": 357,
   "stored_patterns": 96,
   "pattern_bytes": 960,
   "screen_bytes": 1920,
@@ -55,7 +55,11 @@
       255
     ]
   ],
-  "pixels_changed_by_two_color_tiles": 1154,
-  "pixels_changed_by_pattern_budget": 1061,
+  "intro_screen_bytes": 1920,
+  "intro_rle_bytes": 256,
+  "protected_title_patterns": 40,
+  "protected_patterns_total": 42,
+  "pixels_changed_by_pattern_budget": 1680,
+  "intro_pixels_changed_by_pattern_budget": 1626,
   "hardware_tested": false
 }
