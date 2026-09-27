@@ -138,3 +138,10 @@ make rebuild
 
 See `assets/g7400/README.md` for the binary format and loader details, and
 `REVIEW.md` for the technical review and historical corrections.
+
+<img width="1054" height="1492" alt="image" src="https://github.com/user-attachments/assets/e93e4b25-b1ec-4c4c-8ccd-87f8b7831c27" />
+
+<img width="320" height="240" alt="image" src="https://github.com/user-attachments/assets/c07c7d95-928b-4cc2-bff1-4eebdce9cc70" />
+
+<img width="340" height="250" alt="image" src="https://github.com/user-attachments/assets/1d75a3f1-b124-4816-8518-3578600955f0" />
+
