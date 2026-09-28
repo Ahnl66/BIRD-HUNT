@@ -147,3 +147,4 @@ See `assets/g7400/README.md` for the binary format and loader details, and
 
 <img width="1129" height="1393" alt="image" src="https://github.com/user-attachments/assets/87234430-0078-4578-818f-faae66ebf864" />
 
+<img width="827" height="827" alt="image" src="https://github.com/user-attachments/assets/aa734dfb-c61a-47cf-ae3d-47037a7cc52b" />
